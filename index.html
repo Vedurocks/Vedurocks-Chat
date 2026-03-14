@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Data Receiver</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #050505; color: #00ff41; font-family: 'Courier New', Courier, monospace; }
+        .card { border: 1px solid #333; background: #111; padding: 10px; margin-bottom: 10px; animation: fadeIn 0.5s; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .btn { background: #003300; border: 1px solid #00ff41; color: #00ff41; padding: 5px 15px; cursor: pointer; }
+        .btn:hover { background: #00ff41; color: #000; }
+    </style>
+</head>
+<body class="p-8 max-w-2xl mx-auto">
+    <h1 class="text-2xl mb-4 border-b border-green-800 pb-2">EXTERNAL DATA RECEIVER</h1>
+    
+    <div class="mb-6 p-4 bg-gray-900 rounded border border-gray-700">
+        <p class="text-sm text-gray-400 mb-2">API ENDPOINT (Copy this to send data here):</p>
+        <code id="apiUrl" class="block bg-black p-2 text-yellow-400 break-all select-all">Loading...</code>
+    </div>
+
+    <div class="flex gap-4 mb-6">
+        <button onclick="fetchData()" class="btn">REFRESH DATA</button>
+        <button onclick="testPush()" class="btn border-blue-500 text-blue-500 hover:bg-blue-500 hover:text-black">TEST PUSH</button>
+    </div>
+
+    <div id="status" class="mb-4 text-sm text-gray-500">Waiting for data...</div>
+    
+    <div id="dataContainer" class="space-y-2">
+        <!-- Data appears here -->
+    </div>
+
+    <script>
+        // !!! CONFIGURE THIS URL AFTER DEPLOYMENT !!!
+        // It will look like: https://your-project.vercel.app/api/data
+        const API_URL = 'https://your-project.vercel.app/api/data'; 
+        
+        document.getElementById('apiUrl').innerText = API_URL;
+
+        async function fetchData() {
+            const status = document.getElementById('status');
+            const container = document.getElementById('dataContainer');
+            
+            try {
+                status.innerText = "Fetching...";
+                const res = await fetch(API_URL);
+                const data = await res.json();
+                
+                container.innerHTML = '';
+                if (data.length === 0) {
+                    container.innerHTML = '<div class="text-gray-600 italic">No data in memory.</div>';
+                } else {
+                    data.reverse().forEach(item => {
+                        const div = document.createElement('div');
+                        div.className = 'card';
+                        div.innerHTML = `
+                            <div class="flex justify-between text-xs text-gray-500 mb-1">
+                                <span>ID: ${item.id}</span>
+                                <span>${new Date(item.timestamp).toLocaleTimeString()}</span>
+                            </div>
+                            <div class="text-lg">${item.message}</div>
+                            <div class="text-xs text-blue-400 mt-1">Source: ${item.source}</div>
+                        `;
+                        container.appendChild(div);
+                    });
+                }
+                status.innerText = `Last updated: ${new Date().toLocaleTimeString()}`;
+            } catch (e) {
+                status.innerText = "Error: " + e.message;
+            }
+        }
+
+        // Simulate an external push
+        async function testPush() {
+            const testData = {
+                message: "Test message " + Math.floor(Math.random()*1000),
+                source: "Manual Test"
+            };
+            
+            try {
+                const res = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(testData)
+                });
+                const result = await res.json();
+                alert("Pushed! Server response: " + JSON.stringify(result));
+                fetchData(); // Refresh view
+            } catch (e) {
+                alert("Push failed. Is the URL correct?");
+            }
+        }
+
+        // Auto refresh every 5 seconds
+        setInterval(fetchData, 5000);
+        fetchData();
+    </script>
+</body>
+</html>
