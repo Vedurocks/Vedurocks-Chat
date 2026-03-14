@@ -3,99 +3,160 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Live Data Receiver</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <title>BT Secure Web Messenger</title>
+    <!-- CryptoJS for AES Encryption -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
     <style>
-        body { background-color: #050505; color: #00ff41; font-family: 'Courier New', Courier, monospace; }
-        .card { border: 1px solid #333; background: #111; padding: 10px; margin-bottom: 10px; animation: fadeIn 0.5s; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .btn { background: #003300; border: 1px solid #00ff41; color: #00ff41; padding: 5px 15px; cursor: pointer; }
-        .btn:hover { background: #00ff41; color: #000; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; margin: 0; display: flex; flex-direction: column; height: 100vh; }
+        #header { background: #008069; color: white; padding: 15px; display: flex; justify-content: space-between; align-items: center; }
+        #chat-window { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+        .message { max-width: 70%; padding: 10px; border-radius: 10px; margin: 5px 0; position: relative; }
+        .received { background: white; align-self: flex-start; border: 1px solid #ddd; }
+        .sent { background: #d9fdd3; align-self: flex-end; }
+        .sender { font-size: 0.8em; color: #667781; font-weight: bold; }
+        #controls { background: white; padding: 20px; border-top: 1px solid #ddd; display: flex; gap: 10px; }
+        input[type="text"] { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        button { padding: 10px 20px; background: #008069; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: #005e4d; }
+        #settings { padding: 10px; background: #eee; border-bottom: 1px solid #ddd; font-size: 0.9em; }
     </style>
 </head>
-<body class="p-8 max-w-2xl mx-auto">
-    <h1 class="text-2xl mb-4 border-b border-green-800 pb-2">EXTERNAL DATA RECEIVER</h1>
-    
-    <div class="mb-6 p-4 bg-gray-900 rounded border border-gray-700">
-        <p class="text-sm text-gray-400 mb-2">API ENDPOINT (Copy this to send data here):</p>
-        <code id="apiUrl" class="block bg-black p-2 text-yellow-400 break-all select-all">Loading...</code>
-    </div>
+<body>
 
-    <div class="flex gap-4 mb-6">
-        <button onclick="fetchData()" class="btn">REFRESH DATA</button>
-        <button onclick="testPush()" class="btn border-blue-500 text-blue-500 hover:bg-blue-500 hover:text-black">TEST PUSH</button>
+<div id="header">
+    <strong>BT Secure Web Messenger</strong>
+    <div>
+        <span id="status">Disconnected</span>
+        <button onclick="connectSerial()" id="btnConnect">Connect to Bluetooth Port</button>
     </div>
+</div>
 
-    <div id="status" class="mb-4 text-sm text-gray-500">Waiting for data...</div>
-    
-    <div id="dataContainer" class="space-y-2">
-        <!-- Data appears here -->
-    </div>
+<div id="settings">
+    Channel: <input type="text" id="channel" value="General" style="width:80px"> | 
+    Key: <input type="text" id="encKey" value="1234567812345678" style="width:120px"> | 
+    Master Pass: <input type="password" id="masterPass" style="width:80px">
+    <button onclick="checkMaster()">Master Mode</button>
+</div>
 
-    <script>
-        // !!! CONFIGURE THIS URL AFTER DEPLOYMENT !!!
-        // It will look like: https://your-project.vercel.app/api/data
-        const API_URL = 'https://your-project.vercel.app/api/data'; 
+<div id="chat-window"></div>
+
+<div id="controls">
+    <input type="text" id="messageInput" placeholder="Type a message or paste a link...">
+    <button onclick="sendMessage()">Send</button>
+</div>
+
+<script>
+    let port;
+    let writer;
+    let isMaster = false;
+
+    // --- Encryption Logic (Matches Android) ---
+    function encrypt(data, key) {
+        const keyHex = CryptoJS.enc.Utf8.parse(key.padEnd(16, ' ').substring(0, 16));
+        const encrypted = CryptoJS.AES.encrypt(data, keyHex, {
+            mode: CryptoJS.mode.ECB,
+            padding: CryptoJS.pad.Pkcs7
+        });
+        return encrypted.toString();
+    }
+
+    function decrypt(data, key) {
+        try {
+            const keyHex = CryptoJS.enc.Utf8.parse(key.padEnd(16, ' ').substring(0, 16));
+            const decrypted = CryptoJS.AES.decrypt(data, keyHex, {
+                mode: CryptoJS.mode.ECB,
+                padding: CryptoJS.pad.Pkcs7
+            });
+            return decrypted.toString(CryptoJS.enc.Utf8);
+        } catch (e) { return "[Decryption Failed]"; }
+    }
+
+    // --- Bluetooth Serial Logic ---
+    async function connectSerial() {
+        try {
+            port = await navigator.serial.requestPort();
+            await port.open({ baudRate: 9600 });
+            document.getElementById('status').innerText = "Connected";
+            document.getElementById('btnConnect').style.display = "none";
+            
+            const textDecoder = new TextDecoderStream();
+            const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+            const reader = textDecoder.readable.getReader();
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                handleIncomingData(value);
+            }
+        } catch (error) {
+            console.error(error);
+            alert("Connection failed. Ensure the Bluetooth COM port is selected.");
+        }
+    }
+
+    function handleIncomingData(rawData) {
+        // Protocol: SENDER|CHANNEL|TYPE|ENCRYPTED_DATA
+        const parts = rawData.split('|');
+        if (parts.length >= 4) {
+            const sender = parts[0];
+            const channel = parts[1];
+            const type = parts[2];
+            const encryptedData = parts[3];
+            const key = document.getElementById('encKey').value;
+            const currentChannel = document.getElementById('channel').value;
+
+            if (isMaster || channel === currentChannel) {
+                const decrypted = decrypt(encryptedData, key);
+                addMessage(sender, decrypted, 'received', channel);
+            }
+        }
+    }
+
+    async function sendMessage() {
+        const input = document.getElementById('messageInput');
+        const text = input.value;
+        if (!text || !port) return;
+
+        const channel = document.getElementById('channel').value;
+        const key = document.getElementById('encKey').value;
+        const type = text.startsWith('http') ? "LINK" : "TEXT";
         
-        document.getElementById('apiUrl').innerText = API_URL;
+        const encrypted = encrypt(text, key);
+        // Payload: PC_WEB|CHANNEL|TYPE|ENCRYPTED_DATA
+        const payload = `PC_WEB|${channel}|${type}|${encrypted}\n`;
 
-        async function fetchData() {
-            const status = document.getElementById('status');
-            const container = document.getElementById('dataContainer');
-            
-            try {
-                status.innerText = "Fetching...";
-                const res = await fetch(API_URL);
-                const data = await res.json();
-                
-                container.innerHTML = '';
-                if (data.length === 0) {
-                    container.innerHTML = '<div class="text-gray-600 italic">No data in memory.</div>';
-                } else {
-                    data.reverse().forEach(item => {
-                        const div = document.createElement('div');
-                        div.className = 'card';
-                        div.innerHTML = `
-                            <div class="flex justify-between text-xs text-gray-500 mb-1">
-                                <span>ID: ${item.id}</span>
-                                <span>${new Date(item.timestamp).toLocaleTimeString()}</span>
-                            </div>
-                            <div class="text-lg">${item.message}</div>
-                            <div class="text-xs text-blue-400 mt-1">Source: ${item.source}</div>
-                        `;
-                        container.appendChild(div);
-                    });
-                }
-                status.innerText = `Last updated: ${new Date().toLocaleTimeString()}`;
-            } catch (e) {
-                status.innerText = "Error: " + e.message;
-            }
+        writer = port.writable.getWriter();
+        await writer.write(new TextEncoder().encode(payload));
+        writer.releaseLock();
+
+        addMessage("Me", text, 'sent', channel);
+        input.value = "";
+    }
+
+    function addMessage(sender, text, side, ch) {
+        const window = document.getElementById('chat-window');
+        const div = document.createElement('div');
+        div.className = `message ${side}`;
+        
+        let content = `<div class="sender">${sender} ${isMaster ? '(Ch: '+ch+')' : ''}</div>`;
+        if (text.startsWith('http')) {
+            content += `<a href="${text}" target="_blank">${text}</a>`;
+        } else {
+            content += `<div>${text}</div>`;
         }
+        
+        div.innerHTML = content;
+        window.appendChild(div);
+        window.scrollTop = window.scrollHeight;
+    }
 
-        // Simulate an external push
-        async function testPush() {
-            const testData = {
-                message: "Test message " + Math.floor(Math.random()*1000),
-                source: "Manual Test"
-            };
-            
-            try {
-                const res = await fetch(API_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(testData)
-                });
-                const result = await res.json();
-                alert("Pushed! Server response: " + JSON.stringify(result));
-                fetchData(); // Refresh view
-            } catch (e) {
-                alert("Push failed. Is the URL correct?");
-            }
+    function checkMaster() {
+        if (document.getElementById('masterPass').value === "x32rvd") {
+            isMaster = true;
+            alert("Master Mode Active!");
         }
+    }
+</script>
 
-        // Auto refresh every 5 seconds
-        setInterval(fetchData, 5000);
-        fetchData();
-    </script>
 </body>
 </html>
